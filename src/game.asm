@@ -5,22 +5,30 @@ SPRITE_0_ADDR = oam + 0
 SPRITE_1_ADDR = oam + 4
 SPRITE_2_ADDR = oam + 8
 SPRITE_3_ADDR = oam + 12
-SPRITE_BALL_ADDR = oam + 7
+SPRITE_BALL_0_ADDR = oam + 16   ; First ball sprite
+SPRITE_BALL_1_ADDR = oam + 20   ; Second ball sprite
+SPRITE_BALL_2_ADDR = oam + 24   ; Third ball sprite
+SPRITE_BALL_3_ADDR = oam + 28   ; Fourth ball sprite
+SPRITE_BALL_4_ADDR = oam + 32   ; Fifth ball sprite
+SPRITE_BALL_5_ADDR = oam + 36   ; Sixth ball sprite
+SPRITE_BALL_6_ADDR = oam + 40   ; Seventh ball sprite
+SPRITE_BALL_7_ADDR = oam + 44   ; Eighth ball sprite
+
+; Sprite offset constants for accessing sprite attributes
+SPRITE_OFFSET_ATTR = 2     ; Attributes offset
 
 ;*****************************************************************
 ; Define NES cartridge Header
 ;*****************************************************************
-; NES ROM Header - tells emulator/hardware about the ROM
 .segment "HEADER"
 .byte 'N', 'E', 'S', $1a      ; "NES" followed by MS-DOS EOF marker
 .byte $02                     ; 2 x 16KB PRG-ROM banks
 .byte $01                     ; 1 x 8KB CHR-ROM bank
-.byte $00, $00                ; Mapper 0, no special features
+.byte $01, $00                ; Mapper 0, no special features
 
 ;*****************************************************************
 ; Define NES interrupt vectors
 ;*****************************************************************
-; Interrupt vectors - tells CPU where to jump for each interrupt
 .segment "VECTORS"
 .addr nmi_handler         ; NMI vector ($FFFA-$FFFB)
 .addr reset_handler       ; Reset vector ($FFFC-$FFFD)
@@ -29,155 +37,150 @@ SPRITE_BALL_ADDR = oam + 7
 ;*****************************************************************
 ; 6502 Zero Page Memory ($0000–$00FF)
 ;*****************************************************************
-; Fast RAM accessible with 1-byte instructions (faster, smaller)
-; Use this for variables accessed frequently (like gamepad, game variables, pointers)
 .segment "ZEROPAGE"
-; Zero Page Memory Map
-; $00-$0F: General purpose variables and pointers
-temp_var:               .res 1    ; General purpose temp variable
-temp_var2:              .res 1    ; Second temp variable
-temp_ptr_low:           .res 1    ; 16-bit pointer (2 bytes)
-temp_ptr_high:          .res 1    ; 16-bit pointer (2 bytes)
-random_num:             .res 1    ; Random number generator value
+temp_var:               .res 1
+temp_var2:              .res 1
+temp_ptr_low:           .res 1
+temp_ptr_high:          .res 1
+random_num:             .res 1
 
-; Reserve remaining space in this section if needed
-                        .res 11   ; Pad to $10 (optional - depends on your needs)
+num_balls:              .res 1
+ball_spawn_timer:       .res 1
+max_balls:              .res 1
 
-; $10-$1F: Controller input
-controller_1:           .res 1    ; Current frame controller 1 state
-controller_2:           .res 1    ; Current frame controller 2 state
-controller_1_prev:      .res 1    ; Previous frame state for edge detection
-controller_2_prev:      .res 1    ; Previous frame state for edge detection
-controller_1_pressed:   .res 1    ; Check if pressed
-controller_1_released:  .res 1    ; Check if released
+ball_x:                 .res 8
+ball_y:                 .res 8
+ball_dx:                .res 8
+ball_dy:                .res 8
+ball_active:            .res 8
 
-; Reserve remaining space in this section if needed
-                        .res 10   ; Pad to $20 (optional)
+                        .res 11
 
-; $20-$2F: Game state variables
-game_state:             .res 1    ; Current game state
-player_x:               .res 1    ; Player X position
-player_y:               .res 1    ; Player Y position
-player_vel_x:           .res 1    ; Player X velocity
-player_vel_y:           .res 1    ; Player Y velocity
-score:                  .res 1    ; Score low byte
-scroll:                 .res 1    ; Scroll screen
-time:                   .res 1    ; Time (60hz = 60 FPS)
-seconds:                .res 1    ; Seconds
-; Reserve remaining space in this section if needed
-                        .res 07   ; Pad to $30 (optional)
+controller_1:           .res 1
+controller_2:           .res 1
+controller_1_prev:      .res 1
+controller_2_prev:      .res 1
+controller_1_pressed:   .res 1
+controller_1_released:  .res 1
+
+                        .res 10
+
+game_state:             .res 1
+player_x:               .res 1
+player_y:               .res 1
+player_vel_x:           .res 1
+player_vel_y:           .res 1
+score:                  .res 1
+scroll:                 .res 1
+time:                   .res 1
+seconds:                .res 1
+                        .res 07
 
 ;*****************************************************************
 ; OAM (Object Attribute Memory) ($0200–$02FF)
 ;*****************************************************************
-; This 256-byte buffer holds sprite data to be copied to the PPU's
-; internal OAM via DMA ($4014). Each sprite uses 4 bytes:
-;   Byte 0: Y position
-;   Byte 1: Tile index
-;   Byte 2: Attributes (palette, flipping, priority)
-;   Byte 3: X position
 .segment "OAM"
-oam: .res 256	; sprite OAM data
+oam: .res 256
 
 ;*****************************************************************
 ; Code Segment (ROM)
 ;*****************************************************************
-; Main program code section
 .segment "CODE"
 
-; Interrupt Request Handler - called when IRQ interrupt occurs
 .proc irq_handler
-  RTI                     ; Return from interrupt (we don't use IRQ)
+  PHA
+  TXA
+  PHA
+  TYA
+  PHA
+
+  INC time
+
+  PLA
+  TAY
+  PLA
+  TAX
+  PLA
+
+  RTI
 .endproc
 
-; Non-Maskable Interrupt Handler - called during VBlank
 .proc nmi_handler
+  PHA
+  TXA
+  PHA
+  TYA
+  PHA
 
-  RTI                     ; Return from interrupt (not using NMI yet)
+  INC time
+  LDA time
+  CMP #60
+  BNE skip
+    INC seconds
+    LDA #0
+    STA time
+  skip:
+
+  PLA
+  TAY
+  PLA
+  TAX
+  PLA
+
+  RTI
 .endproc
 
-;******************************************************************************
-; Procedure: set_palette
-;------------------------------------------------------------------------------
-; Writes 32 bytes of color data from palette_data into the PPU's palette memory
-; at $3F00. This fills all 4 background palettes and all 4 sprite palettes.
-;
-; Assumes:
-;   - palette_data is a 32-byte table in ROM.
-;   - Rendering is off or you're in VBlank (writes to $2007 are safe).
-;******************************************************************************
 .proc set_palette
+    vram_set_address PALETTE_ADDRESS
 
-    vram_set_address PALETTE_ADDRESS  ; Set PPU VRAM pointer to $3F00 (palette memory start)
-
-    LDX #$00                          ; Start index at 0
-
+    LDX #$00
 @loop:
-    LDA palette_data, X              ; Load color byte from palette_data table
-    STA PPU_VRAM_IO                  ; Write to PPU at $3F00 + X
-    INX                              ; Move to next color
-    CPX #$20                         ; Have we written all 32 bytes?
-    BNE @loop                        ; Loop until done
+    LDA palette_data, X
+    STA PPU_VRAM_IO
+    INX
+    CPX #$20
+    BNE @loop
 
-    RTS                              ; Return from procedure
-
+    RTS
 .endproc
 
-;******************************************************************************
-; Procedure: set_nametable
-;------------------------------------------------------------------------------
-; Transfers 960 bytes of tile data from `nametable_data` to the PPU's nametable 0
-; at $2000. This fills the entire 32×30 background tilemap.
-;
-; Assumes:
-;   - PPU is ready (called during or before VBlank)
-;   - nametable_data is a 960-byte table in ROM
-;   - $00/$01 are available as temporary zero-page pointer
-;******************************************************************************
 .proc set_nametable
+    wait_for_vblank
+    vram_set_address NAME_TABLE_0_ADDRESS
 
-    wait_for_vblank                        ; Wait for VBlank to safely write to PPU
-
-    vram_set_address NAME_TABLE_0_ADDRESS  ; Set VRAM address to start of nametable ($2000)
-
-    ; Set up 16-bit pointer to nametable_data
     LDA #<nametable_data
-    STA temp_ptr_low                       ; Store low byte of address in $00
+    STA temp_ptr_low
     LDA #>nametable_data
-    STA temp_ptr_high                      ; Store high byte in $01
+    STA temp_ptr_high
 
-    ; Begin loading 960 bytes (32×30 tiles)
-    LDY #$00                               ; Offset within current page
-    LDX #$03                               ; 3 full 256-byte pages (768 bytes total)
+    LDY #$00
+    LDX #$03
 
 load_page:
-    LDA (temp_ptr_low),Y                            ; Load byte from nametable_data + Y
-    STA PPU_VRAM_IO                        ; Write to PPU VRAM ($2007)
+    LDA (temp_ptr_low),Y
+    STA PPU_VRAM_IO
     INY
-    BNE load_page                          ; Loop through 256-byte page
+    BNE load_page
 
-    INC temp_ptr_high                      ; Move to next page (high byte of pointer)
+    INC temp_ptr_high
     DEX
-    BNE load_page                           ; After 3 pages (768 bytes), handle the remaining 192
+    BNE load_page
 
 check_remaining:
-    LDY #$00                               ; Reset Y to load remaining 192 bytes
+    LDY #$00
 remaining_loop:
     LDA (temp_ptr_low),Y
     STA PPU_VRAM_IO
     INY
-    CPY #192                               ; Stop after 192 bytes (960 - 768)
+    CPY #192
     BNE remaining_loop
 
-  ; set text location
- 	LDA PPU_STATUS ; reset address latch
- 	LDA #$20 ; set PPU address to $208A (Row = 4, Column = 10)
- 	STA PPU_ADDRESS
- 	LDA #$8A
- 	STA PPU_ADDRESS
+    LDA PPU_STATUS
+    LDA #$20
+    STA PPU_ADDRESS
+    LDA #$8A
+    STA PPU_ADDRESS
 
-  ; print text
-  ; draw some text on the screen
     LDX #$0
     textloop:
     LDA hello_txt, X
@@ -188,17 +191,24 @@ remaining_loop:
     JMP textloop
   :
 
-  ; Reset scroll registers to 0,0 (needed after VRAM access)
   LDA #$00
-  STA PPU_SCROLL                         ; Write horizontal scroll
-  STA PPU_SCROLL                         ; Write vertical scroll
+  STA PPU_SCROLL
+  STA PPU_SCROLL
 
-  RTS                                    ; Done
-
+  RTS
 .endproc
 
 .proc init_sprites
-  ; set sprite tiles
+  ; Initialize player sprites
+  LDX #0
+  load_sprite:
+    LDA sprite_data, x
+    STA SPRITE_0_ADDR, x
+    INX
+    CPX #4
+    BNE load_sprite
+
+  ; Set player sprite tiles
   LDA #1
   STA SPRITE_0_ADDR + SPRITE_OFFSET_TILE
   LDA #2
@@ -208,28 +218,73 @@ remaining_loop:
   LDA #4
   STA SPRITE_3_ADDR + SPRITE_OFFSET_TILE
 
+  ; Initialize ball system
+  LDA #0
+  STA num_balls
+  STA ball_spawn_timer
+  LDA #8
+  STA max_balls
+
+  ; Clear all ball slots
+  LDX #0
+clear_balls:
+  LDA #0
+  STA ball_active, X
+  INX
+  CPX #8
+  BNE clear_balls
+
+  ; Initialize all ball sprites to be hidden
+  LDX #0
+init_ball_sprites:
+  ; Calculate sprite address for this ball
+  TXA
+  ASL
+  ASL
+  CLC
+  ADC #<SPRITE_BALL_0_ADDR
+  STA temp_ptr_low
+  LDA #>SPRITE_BALL_0_ADDR
+  ADC #0
+  STA temp_ptr_high
+
+  ; Set Y position off-screen
+  LDY #SPRITE_OFFSET_Y
+  LDA #$FF
+  STA (temp_ptr_low), Y
+
+  ; Set tile
+  LDY #SPRITE_OFFSET_TILE
+  LDA #5
+  STA (temp_ptr_low), Y
+
+  ; Set attributes
+  LDY #SPRITE_OFFSET_ATTR
+  LDA #0
+  STA (temp_ptr_low), Y
+
+  ; Set X position
+  LDY #SPRITE_OFFSET_X
+  LDA #0
+  STA (temp_ptr_low), Y
+
+  INX
+  CPX #8
+  BNE init_ball_sprites
+
   LDA #128
   STA player_x
-
   LDA #170
   STA player_y
+
+  ; Spawn first ball
+  JSR spawn_ball
 
   RTS
 .endproc
 
-;******************************************************************************
-; Procedure: update_sprites
-;------------------------------------------------------------------------------
-; Transfers 256 bytes of sprite data from the OAM buffer in CPU RAM
-; to the PPU's internal Object Attribute Memory (OAM) using DMA.
-;
-; Assumes:
-;   - OAM sprite data is stored at a page-aligned label `oam` (e.g., $0200)
-;   - This is called during VBlank or with rendering disabled
-;******************************************************************************
-
 .proc update_sprites
-  ; Update OAM values
+  ; Update player sprites
   LDA player_x
   STA SPRITE_0_ADDR + SPRITE_OFFSET_X
   STA SPRITE_2_ADDR + SPRITE_OFFSET_X
@@ -246,23 +301,87 @@ remaining_loop:
   STA SPRITE_2_ADDR + SPRITE_OFFSET_Y
   STA SPRITE_3_ADDR + SPRITE_OFFSET_Y
 
-  LDA #$00
-  ;STA PPU_SCROLL                         ; Write horizontal scroll
-  ;DEC scroll
-  ;LDA scroll
-  STA PPU_SCROLL                         ; Write vertical scroll
+  ; Update all ball sprites
+  LDX #0
+update_ball_sprites:
+  LDA ball_active, X
+  BEQ hide_ball
 
-  ; Set OAM address to 0 — required before DMA or manual OAM writes
-  LDA #$00
-  STA PPU_SPRRAM_ADDRESS    ; $2003 — OAM address register
+  ; Calculate sprite address for this ball
+  TXA
+  ASL
+  ASL
+  CLC
+  ADC #<SPRITE_BALL_0_ADDR
+  STA temp_ptr_low
+  LDA #>SPRITE_BALL_0_ADDR
+  ADC #0
+  STA temp_ptr_high
 
-  ; Start OAM DMA transfer (copies 256 bytes from oam → PPU OAM)
-  ; Write the high byte of the source address (e.g., $02 for $0200)
+  ; Set Y position
+  LDY #SPRITE_OFFSET_Y
+  LDA ball_y, X
+  STA (temp_ptr_low), Y
+
+  ; Set X position
+  LDY #SPRITE_OFFSET_X
+  LDA ball_x, X
+  STA (temp_ptr_low), Y
+
+  ; Set tile
+  LDY #SPRITE_OFFSET_TILE
+  LDA #5
+  STA (temp_ptr_low), Y
+
+  ; Set attributes
+  LDY #SPRITE_OFFSET_ATTR
+  LDA #0
+  STA (temp_ptr_low), Y
+
+  JMP next_sprite
+
+hide_ball:
+  ; Hide sprite by moving it off-screen
+  TXA
+  ASL
+  ASL
+  CLC
+  ADC #<SPRITE_BALL_0_ADDR
+  STA temp_ptr_low
+  LDA #>SPRITE_BALL_0_ADDR
+  ADC #0
+  STA temp_ptr_high
+
+  LDY #SPRITE_OFFSET_Y
+  LDA #$FF
+  STA (temp_ptr_low), Y
+
+next_sprite:
+  INX
+  CPX #8
+  BNE update_ball_sprites
+
+  ; Set sprite attributes for player
+  LDA #0
+  STA SPRITE_0_ADDR + SPRITE_OFFSET_ATTR
+  STA SPRITE_1_ADDR + SPRITE_OFFSET_ATTR
+  STA SPRITE_2_ADDR + SPRITE_OFFSET_ATTR
+  STA SPRITE_3_ADDR + SPRITE_OFFSET_ATTR
+
+  ; Screen scroll
+  LDA #$00
+  STA PPU_SCROLL
+  DEC scroll
+  LDA scroll
+  STA PPU_SCROLL
+
+  ; OAM DMA
+  LDA #$00
+  STA PPU_SPRRAM_ADDRESS
   LDA #>oam
-  STA SPRITE_DMA            ; $4014 — triggers OAM DMA (513–514 cycles, CPU stalled)
+  STA SPRITE_DMA
 
   RTS
-
 .endproc
 
 .proc update_player
@@ -270,7 +389,6 @@ remaining_loop:
     AND #PAD_L
     BEQ not_left
       LDA player_x
-      ;DEX
       SEC
       SBC #$01
       STA player_x
@@ -299,193 +417,246 @@ not_left:
       ADC #$01
       STA player_y
   not_down:
-    RTS                       ; Return to caller
+    RTS
 .endproc
 
-;******************************************************************************
-; Procedure: main
-;------------------------------------------------------------------------------
-; Main entry point for the game loop.
-; Initializes PPU control settings, enables rendering, and enters
-; an infinite loop where it waits for VBlank and updates sprite data.
-;******************************************************************************
+.proc update_ball
+  ; Check spawn timer
+  INC ball_spawn_timer
+  LDA ball_spawn_timer
+  CMP #180
+  BNE no_spawn
+
+  LDA #0
+  STA ball_spawn_timer
+
+  ; Only spawn if we haven't reached max balls
+  LDA num_balls
+  CMP max_balls
+  BCS no_spawn
+
+  JSR spawn_ball
+
+no_spawn:
+  ; Update all active balls
+  LDX #0
+update_loop:
+  LDA ball_active, X
+  BEQ next_ball
+
+  ; Update Y position
+  LDA ball_y, X
+  CLC
+  ADC ball_dy, X
+  STA ball_y, X
+
+  ; Check Y boundaries
+  CMP #20
+  BCC bounce_top
+  CMP #210
+  BCS bounce_bottom
+  JMP check_x
+
+bounce_top:
+  LDA #1
+  STA ball_dy, X
+  JMP check_x
+
+bounce_bottom:
+  LDA #$FF
+  STA ball_dy, X
+
+check_x:
+  ; Update X position
+  LDA ball_x, X
+  CLC
+  ADC ball_dx, X
+  STA ball_x, X
+
+  ; Check X boundaries
+  CMP #8
+  BCC bounce_left
+  CMP #248
+  BCS bounce_right
+  JMP next_ball
+
+bounce_left:
+  LDA #1
+  STA ball_dx, X
+  JMP next_ball
+
+bounce_right:
+  LDA #$FF
+  STA ball_dx, X
+
+next_ball:
+  INX
+  CPX #8
+  BNE update_loop
+
+  RTS
+.endproc
+
 .proc main
-    ; seed the random number
     LDA #$45
     STA random_num
-    ;--------------------------------------------------------------------------
-    ; Configure PPU Control Register ($2000)
-    ; - Enable NMI on VBlank (bit 7 = 1)
-    ; - Use pattern table 1 ($1000) for background tiles (bit 4 = 1)
-    ;--------------------------------------------------------------------------
+
     LDA #(PPUCTRL_ENABLE_NMI | PPUCTRL_BG_TABLE_1000)
     STA PPU_CONTROL
 
-    ;--------------------------------------------------------------------------
-    ; Configure PPU Mask Register ($2001)
-    ; - Show background and sprites (bits 3 & 4 = 1)
-    ; - Show background and sprites in leftmost 8 pixels (bits 1 & 2 = 1)
-    ;--------------------------------------------------------------------------
     LDA #(PPUMASK_SHOW_BG | PPUMASK_SHOW_SPRITES | PPUMASK_SHOW_BG_LEFT | PPUMASK_SHOW_SPRITES_LEFT)
     STA PPU_MASK
 
 forever:
     JSR get_random
 
-    ; Wait for vertical blank before doing game logic and rendering updates
     wait_for_vblank
 
-    ; Read controller
     JSR read_controller
     JSR update_player
-
-    ; Update sprite data (DMA transfer to PPU OAM)
+    JSR update_ball
     JSR update_sprites
 
-    ; Infinite loop — keep running frame logic
     JMP forever
-
 .endproc
 
-; ------------------------------------------------------------------------------
-; Procedure: read_controller
-; Purpose:   Reads the current state of NES Controller 1 and stores the button
-;            states as a bitfield in the `controller_1` variable.
-;
-;            The routine strobes the controller to latch the current button
-;            state, then reads each of the 8 button states (A, B, Select, Start,
-;            Up, Down, Left, Right) serially from the controller port at $4016.
-;            The result is built bit-by-bit into the `controller_1` variable
-;            using ROL to construct the byte from right to left.
-;
-; Notes:     The final layout of bits in `controller_1` will be:
-;            Bit 0 = A, Bit 1 = B, Bit 2 = Select, Bit 3 = Start,
-;            Bit 4 = Up, Bit 5 = Down, Bit 6 = Left, Bit 7 = Right
-; ------------------------------------------------------------------------------
 .proc read_controller
-
-  ; save current controller state into previous controller state
   LDA controller_1
   STA controller_1_prev
 
-  ; Read controller state
-  ; Controller 1 is at $4016 (controller 2 at $4017)
   LDA #$01
-  STA JOYPAD1       ; Strobe joypad - write 1 to latch current button state
-                    ; This tells the controller to capture the current button presses
+  STA JOYPAD1
   LDA #$00
-  STA JOYPAD1       ; End strobe - write 0 to begin serial data output
-                    ; Controller is now ready to send button data one bit at a time
-                    ; Next 8 reads from JOYPAD1 will return buttons in sequence
+  STA JOYPAD1
 
-  LDX #$08          ; Set loop counter to 8 (read 8 buttons)
+  LDX #$08
 
 read_loop:
-   LDA JOYPAD1       ; Read one bit from joypad ($4016)
-                     ; Returns $00 (not pressed) or $01 (pressed)
-   LSR A             ; Shift accumulator right - bit 0 goes to carry flag
-                     ; If button pressed: carry = 1, if not: carry = 0
-   ROL controller_1  ; Rotate controller_1 left through carry
-                     ; Shifts previous bits left, adds new bit from carry to bit 0
-                     ; Building result byte from right to left
-   DEX               ; Decrement loop counter (started at 8)
-   BNE read_loop     ; Branch if X != 0 (still have bits to read)
-                     ; Loop reads: A, B, Select, Start, Up, Down, Left, Right
-                     ; Final controller_1 format: RLDUTSBA
-                     ; (R=Right, L=Left, D=Down, U=Up, T=sTart, S=Select, B=B, A=A)
-
-    ; Now controller_1 contains the button state
-    ; Bit 0 = A, Bit 1 = B, Bit 2 = Select, etc.
+   LDA JOYPAD1
+   LSR A
+   ROL controller_1
+   DEX
+   BNE read_loop
 
     RTS
-
 .endproc
 
-; -----------------------------------------------------
-; 8-bit Pseudo-Random Number Generator using LFSR-like bit mixing
-; - Uses 'random_num' to hold and update the current pseudo-random value
-; - 'temp' is used as a scratch byte
-; - The routine generates a new random number in 'random_num' on each call
-; -----------------------------------------------------
 get_random:
-    LDA random_num      ; Load current random value
-
-    ; Test if we need to apply the feedback polynomial
-    ; We check bit 7 (sign bit) - if set, we'll XOR with the tap pattern
-    ASL                 ; Shift left, bit 7 -> Carry, bit 0 <- 0
-    BCC no_feedback     ; If carry clear (original bit 7 was 0), skip XOR
-
-    ; Apply feedback: XOR with $39 (binary: 00111001)
-    ; This represents taps at positions 5,4,3,0 after the shift
-    EOR #$39           ; XOR with tap pattern
-
+    LDA random_num
+    ASL
+    BCC no_feedback
+    EOR #$39
 no_feedback:
-    STA random_num      ; Store new random value
-    RTS                 ; Return with new random value in A
+    STA random_num
+    RTS
+
+.proc spawn_ball
+  ; Find first inactive ball slot
+  LDX #0
+find_slot:
+  LDA ball_active, X
+  BEQ found_slot
+  INX
+  CPX #8
+  BNE find_slot
+  RTS
+
+found_slot:
+  ; Activate this ball
+  LDA #1
+  STA ball_active, X
+
+  ; Set random position
+  JSR get_random
+  AND #$7F
+  CLC
+  ADC #64
+  STA ball_x, X
+
+  JSR get_random
+  AND #$3F
+  CLC
+  ADC #50
+  STA ball_y, X
+
+  ; Set random velocity
+  JSR get_random
+  AND #$01
+  BEQ neg_dx
+  LDA #2
+  JMP store_dx
+neg_dx:
+  LDA #$FE
+store_dx:
+  STA ball_dx, X
+
+  JSR get_random
+  AND #$01
+  BEQ neg_dy
+  LDA #2
+  JMP store_dy
+neg_dy:
+  LDA #$FE
+store_dy:
+  STA ball_dy, X
+
+  INC num_balls
+  RTS
+.endproc
 
 ;*****************************************************************
 ; Character ROM data (graphics patterns)
 ;*****************************************************************
 .segment "CHARS"
-; Load CHR data
   .incbin "assets/tiles.chr"
 
 ;*****************************************************************
 ; Character ROM data (graphics patterns)
 ;*****************************************************************
 .segment "RODATA"
-; Load palette data
 palette_data:
   .incbin "assets/palette.pal"
-; Load nametable data
 nametable_data:
   .incbin "assets/screen.nam"
+sprite_data:
+.byte 30, 1, 0, 40
+.byte 30, 2, 0, 48
+.byte 38, 3, 0, 40
+.byte 38, 4, 0, 48
 
 hello_txt:
 .byte 'A','F','R','O', ' ', 'M', 'A', 'N', 0
 
-; Startup segment
 .segment "STARTUP"
 
-; Reset Handler - called when system starts up or resets
 .proc reset_handler
-  ; === CPU Initialization ===
-  SEI                     ; Set interrupt disable flag (ignore IRQ)
-  CLD                     ; Clear decimal mode flag (NES doesn't support BCD)
+  SEI
+  CLD
 
-  ; === APU Initialization ===
-  LDX #$40                ; Load X with $40
-  STX $4017               ; Write to APU Frame Counter register
-                          ; Disables APU frame IRQ
+  LDX #$40
+  STX $4017
 
-  ; === Stack Initialization ===
-  LDX #$FF                ; Load X with $FF (top of stack page)
-  TXS                     ; Transfer X to Stack pointer ($01FF)
+  LDX #$FF
+  TXS
 
-  ; === PPU Initialization ===
-  LDA #$00                ; Set A = $00
-  STA PPU_CONTROL         ; PPUCTRL = 0 (disable NMI, sprites, background)
-  STA PPU_MASK            ; PPUMASK = 0 (disable rendering)
-  STA APU_DM_CONTROL      ; disable DMC IRQ
+  LDA #$00
+  STA PPU_CONTROL
+  STA PPU_MASK
+  STA APU_DM_CONTROL
 
-  ; First VBlank wait - PPU needs time to stabilize
-:                         ; Anonymous label (used to branch to in BPL command)
-  BIT PPU_STATUS          ; Read PPUSTATUS register
-  BPL :-                  ; Branch if Plus (bit 7 = 0, no VBlank)
-                          ; Loop until VBlank flag is set
+:
+  BIT PPU_STATUS
+  BPL :-
 
-  ; clear_ram
   clear_oam oam
 
-  ; Second VBlank wait - ensures PPU is fully ready
-:                         ; Anonymous label (used to branch to in BPL command)
-  BIT PPU_STATUS          ; Read PPUSTATUS register again
-  BPL :-                  ; Branch if Plus (bit 7 = 0, no VBlank)
-                          ; Loop until second VBlank occurs
+:
+  BIT PPU_STATUS
+  BPL :-
 
-  JSR set_palette         ; Set palette colors
-  JSR set_nametable       ; Set nametable tiles
-  JSR init_sprites        ; Initialize sprites
+  JSR set_palette
+  JSR set_nametable
+  JSR init_sprites
 
-  JMP main                ; Jump to main program
+  JMP main
 .endproc
