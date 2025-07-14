@@ -222,7 +222,7 @@ remaining_loop:
   LDA #0
   STA num_balls
   STA ball_spawn_timer
-  LDA #8
+  LDA #2
   STA max_balls
 
   ; Clear all ball slots
@@ -231,7 +231,7 @@ clear_balls:
   LDA #0
   STA ball_active, X
   INX
-  CPX #8
+  CPX #2
   BNE clear_balls
 
   ; Initialize all ball sprites to be hidden
@@ -269,7 +269,7 @@ init_ball_sprites:
   STA (temp_ptr_low), Y
 
   INX
-  CPX #8
+  CPX #2
   BNE init_ball_sprites
 
   LDA #128
@@ -300,6 +300,16 @@ init_ball_sprites:
   ADC #8
   STA SPRITE_2_ADDR + SPRITE_OFFSET_Y
   STA SPRITE_3_ADDR + SPRITE_OFFSET_Y
+
+  ; Restore player sprite tile indices every frame
+  LDA #1
+  STA SPRITE_0_ADDR + SPRITE_OFFSET_TILE
+  LDA #2
+  STA SPRITE_1_ADDR + SPRITE_OFFSET_TILE
+  LDA #3
+  STA SPRITE_2_ADDR + SPRITE_OFFSET_TILE
+  LDA #4
+  STA SPRITE_3_ADDR + SPRITE_OFFSET_TILE
 
   ; Update all ball sprites
   LDX #0
@@ -358,7 +368,7 @@ hide_ball:
 
 next_sprite:
   INX
-  CPX #8
+  CPX #2
   BNE update_ball_sprites
 
   ; Set sprite attributes for player
@@ -460,11 +470,14 @@ update_loop:
 bounce_top:
   LDA #1
   STA ball_dy, X
+  JSR play_random_wall_bounce_sound
   JMP check_x
 
 bounce_bottom:
   LDA #$FF
   STA ball_dy, X
+  JSR play_random_wall_bounce_sound
+  JMP check_x
 
 check_x:
   ; Update X position
@@ -483,18 +496,154 @@ check_x:
 bounce_left:
   LDA #1
   STA ball_dx, X
+  JSR play_random_wall_bounce_sound
   JMP next_ball
 
 bounce_right:
   LDA #$FF
   STA ball_dx, X
+  JSR play_random_wall_bounce_sound
+  JMP next_ball
 
 next_ball:
   INX
-  CPX #8
+  CPX #2
   BNE update_loop
 
+  ; Ball-to-ball and ball-to-player collision
+  JSR check_ball_collisions
+  JSR check_ball_player_collision
+
   RTS
+.endproc
+
+; Ball-to-ball collision: reverse dx/dy if two balls overlap (8x8 AABB)
+.proc check_ball_collisions
+  LDX #0
+outer_ball:
+  LDA ball_active, X
+  BEQ next_outer
+  STX temp_var
+  LDY temp_var
+@inner_loop:
+    INY
+    CPY #2
+    BCS next_outer
+    LDA ball_active, Y
+    BEQ @next_inner
+    ; Compare X overlap
+    LDA ball_x, X
+    SEC
+    SBC ball_x, Y
+    CLC
+    ADC #8
+    CMP #16
+    BCS @next_inner
+    ; Compare Y overlap
+    LDA ball_y, X
+    SEC
+    SBC ball_y, Y
+    CLC
+    ADC #8
+    CMP #16
+    BCS @next_inner
+    ; Collision! Reverse both dx/dy
+    LDA ball_dx, X
+    EOR #$FF
+    CLC
+    ADC #1
+    STA ball_dx, X
+    LDA ball_dy, X
+    EOR #$FF
+    CLC
+    ADC #1
+    STA ball_dy, X
+    LDA ball_dx, Y
+    EOR #$FF
+    CLC
+    ADC #1
+    STA ball_dx, Y
+    LDA ball_dy, Y
+    EOR #$FF
+    CLC
+    ADC #1
+    STA ball_dy, Y
+    JSR play_bounce_sound
+@next_inner:
+    JMP @inner_loop
+next_outer:
+  INX
+  CPX #2
+  BNE outer_ball
+  RTS
+.endproc
+
+; Ball-to-player collision: reverse ball dx/dy if ball overlaps player (16x16 AABB)
+.proc check_ball_player_collision
+  LDX #0
+player_loop:
+  LDA ball_active, X
+  BEQ next_player
+  ; Compare X overlap
+  LDA ball_x, X
+  SEC
+  SBC player_x
+  CLC
+  ADC #8
+  CMP #24
+  BCS next_player
+  ; Compare Y overlap
+  LDA ball_y, X
+  SEC
+  SBC player_y
+  CLC
+  ADC #8
+  CMP #24
+  BCS next_player
+  ; Collision! Reverse ball dx/dy
+  LDA ball_dx, X
+  EOR #$FF
+  CLC
+  ADC #1
+  STA ball_dx, X
+  LDA ball_dy, X
+  EOR #$FF
+  CLC
+  ADC #1
+  STA ball_dy, X
+  JSR play_bounce_sound
+next_player:
+  INX
+  CPX #2
+  BNE player_loop
+  RTS
+.endproc
+
+.proc play_bounce_sound
+    ; Set pulse 1 to a longer, louder beep
+    LDA #%10011111      ; Duty cycle, envelope (volume=15, constant)
+    STA $4000           ; Pulse 1 control
+    LDA #$30            ; Timer low (mid pitch)
+    STA $4002
+    LDA #%10000001      ; Length counter = 1 (short but audible), trigger
+    STA $4003
+    RTS
+.endproc
+
+.proc play_random_wall_bounce_sound
+    JSR get_random
+    LDA random_num
+    AND #$3F         ; Limit to a reasonable pitch range (0-63)
+    ORA #$10         ; Avoid too high/low pitch
+    STA temp_var     ; Store for use below
+
+    LDA #%10011111   ; Duty cycle, envelope (max volume)
+    STA $4000
+    LDA temp_var     ; Random pitch
+    STA $4002
+    LDA #%10000001   ; Length counter = 1, trigger
+    STA $4003
+    RTS
 .endproc
 
 .proc main
@@ -557,7 +706,7 @@ find_slot:
   LDA ball_active, X
   BEQ found_slot
   INX
-  CPX #8
+  CPX #2
   BNE find_slot
   RTS
 
@@ -600,7 +749,12 @@ neg_dy:
 store_dy:
   STA ball_dy, X
 
+  ; Only increment num_balls if less than 8
+  LDA num_balls
+  CMP #8
+  BCS skip_inc
   INC num_balls
+skip_inc:
   RTS
 .endproc
 
@@ -643,6 +797,10 @@ hello_txt:
   STA PPU_CONTROL
   STA PPU_MASK
   STA APU_DM_CONTROL
+
+  ; Enable APU pulse channel 1
+  LDA #$01
+  STA $4015
 
 :
   BIT PPU_STATUS
