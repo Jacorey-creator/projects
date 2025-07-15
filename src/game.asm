@@ -8,10 +8,10 @@
 .include "macros.inc"        ; Useful macros
 
 ; Sprite memory locations for easy access
-SPRITE_0_ADDR = oam + 0      ; Player sprite 0
-SPRITE_1_ADDR = oam + 4      ; Player sprite 1
-SPRITE_2_ADDR = oam + 8      ; Player sprite 2
-SPRITE_3_ADDR = oam + 12     ; Player sprite 3
+SPRITE_0_ADDR = oam + 0      ; Player sprite 0 (upper-left)
+SPRITE_1_ADDR = oam + 4      ; Player sprite 1 (upper-right)
+SPRITE_2_ADDR = oam + 8      ; Player sprite 2 (lower-left)
+SPRITE_3_ADDR = oam + 12     ; Player sprite 3 (lower-right)
 SPRITE_BALL_0_ADDR = oam + 16 ; Ball sprite 0
 SPRITE_BALL_1_ADDR = oam + 20 ; Ball sprite 1
 SPRITE_BALL_2_ADDR = oam + 24 ; Ball sprite 2
@@ -32,16 +32,16 @@ SPRITE_OFFSET_ATTR = 2       ; Offset for sprite attribute byte
 
 ;================ INTERRUPT VECTORS ================
 .segment "VECTORS"
-.addr nmi_handler         ; NMI vector
-.addr reset_handler       ; Reset vector
-.addr irq_handler         ; IRQ vector
+.addr nmi_handler         ; NMI vector (vertical blank interrupt)
+.addr reset_handler       ; Reset vector (power-on/reset)
+.addr irq_handler         ; IRQ vector (not used)
 
 ;================ ZERO PAGE VARIABLES ================
 .segment "ZEROPAGE"
 ; General purpose and game state variables
  temp_var:               .res 1   ; Temporary variable
  temp_var2:              .res 1   ; Second temp variable
- temp_ptr_low:           .res 1   ; Pointer low byte
+ temp_ptr_low:           .res 1   ; Pointer low byte (for indirect addressing)
  temp_ptr_high:          .res 1   ; Pointer high byte
  random_num:             .res 1   ; Random number seed
 
@@ -53,85 +53,86 @@ SPRITE_OFFSET_ATTR = 2       ; Offset for sprite attribute byte
  ball_y:                 .res 8   ; Y positions of balls
  ball_dx:                .res 8   ; X velocities of balls
  ball_dy:                .res 8   ; Y velocities of balls
- ball_active:            .res 8   ; Ball active flags
+ ball_active:            .res 8   ; Ball active flags (0=inactive, 1=active)
 
-                        .res 11  ; Padding
+                        .res 11  ; Padding (unused)
 
- controller_1:           .res 1   ; Controller 1 state
- controller_2:           .res 1   ; Controller 2 state
+ controller_1:           .res 1   ; Controller 1 state (current frame)
+ controller_2:           .res 1   ; Controller 2 state (not used)
  controller_1_prev:      .res 1   ; Previous controller 1 state
- controller_2_prev:      .res 1   ; Previous controller 2 state
+ controller_2_prev:      .res 1   ; Previous controller 2 state (not used)
  controller_1_pressed:   .res 1   ; Buttons pressed this frame
  controller_1_released:  .res 1   ; Buttons released this frame
 
-                        .res 10  ; Padding
+                        .res 10  ; Padding (unused)
 
- game_state:             .res 1   ; Game state (unused)
- player_x:               .res 1   ; Player X position
- player_y:               .res 1   ; Player Y position
- player_vel_x:           .res 1   ; Player X velocity (unused)
- player_vel_y:           .res 1   ; Player Y velocity (unused)
- score:                  .res 1   ; Player score
- scroll:                 .res 1   ; Screen scroll value
- time:                   .res 1   ; Frame counter
+game_state:             .res 1   ; Game state (unused)
+player_x:               .res 1   ; Player X position
+player_y:               .res 1   ; Player Y position
+player_vel_x:           .res 1   ; Player X velocity (unused)
+player_vel_y:           .res 1   ; Player Y velocity (unused)
+score:                  .res 1   ; Player score (0-9)
+scroll:                 .res 1   ; Screen scroll value
+ time:                   .res 1   ; Frame counter (increments every NMI)
  seconds:                .res 1   ; Seconds counter
-                        .res 07  ; Padding
+                        .res 07  ; Padding (unused)
+win_state:              .res 1   ; 0 = playing, 1 = win screen
 
 ;================ OAM (SPRITE RAM) ================
 .segment "OAM"
-oam: .res 256                ; Sprite attribute memory
+oam: .res 256                ; Sprite attribute memory (Object Attribute Memory)
 
 ;================ MAIN CODE SEGMENT ================
 .segment "CODE"
 
 ; IRQ handler (not used, but required by NES)
 .proc irq_handler
+  PHA                        ; Save A
+  TXA                        ; Save X
   PHA
-  TXA
+  TYA                        ; Save Y
   PHA
-  TYA
-  PHA
-  INC time                  ; Increment frame counter
-  PLA
+  INC time                  ; Increment frame counter (for debugging)
+  PLA                        ; Restore Y
   TAY
-  PLA
+  PLA                        ; Restore X
   TAX
-  PLA
-  RTI
+  PLA                        ; Restore A
+  RTI                        ; Return from interrupt
 .endproc
 
 ; NMI handler (increments time and seconds)
 .proc nmi_handler
-  PHA
+  PHA                        ; Save A
   TXA
-  PHA
+  PHA                        ; Save X
   TYA
-  PHA
-  INC time
+  PHA                        ; Save Y
+  INC time                   ; Increment frame counter
   LDA time
   CMP #60
   BNE skip
-    INC seconds
+    INC seconds              ; Every 60 frames, increment seconds
     LDA #0
     STA time
   skip:
-  PLA
+  PLA                        ; Restore Y
   TAY
-  PLA
+  PLA                        ; Restore X
   TAX
-  PLA
-  RTI
+  PLA                        ; Restore A
+  RTI                        ; Return from interrupt
 .endproc
 
 ; Load palette data into PPU
 .proc set_palette
-    vram_set_address PALETTE_ADDRESS
+    vram_set_address PALETTE_ADDRESS ; Set VRAM address to palette
     LDX #$00
 @loop:
-    LDA palette_data, X
-    STA PPU_VRAM_IO
+    LDA palette_data, X      ; Load palette byte
+    STA PPU_VRAM_IO          ; Write to PPU
     INX
-    CPX #$20
+    CPX #$20                ; 32 bytes
     BNE @loop
     RTS
 .endproc
@@ -139,7 +140,7 @@ oam: .res 256                ; Sprite attribute memory
 ; Load nametable (background) data into PPU
 .proc set_nametable
     wait_for_vblank
-    vram_set_address NAME_TABLE_0_ADDRESS
+    vram_set_address NAME_TABLE_0_ADDRESS ; Set VRAM address to nametable
     LDA #<nametable_data
     STA temp_ptr_low
     LDA #>nametable_data
@@ -147,8 +148,8 @@ oam: .res 256                ; Sprite attribute memory
     LDY #$00
     LDX #$03
 load_page:
-    LDA (temp_ptr_low),Y
-    STA PPU_VRAM_IO
+    LDA (temp_ptr_low),Y    ; Load background byte
+    STA PPU_VRAM_IO         ; Write to PPU
     INY
     BNE load_page
     INC temp_ptr_high
@@ -173,7 +174,7 @@ remaining_loop:
 .proc init_sprites
   LDX #0
   load_sprite:
-    LDA sprite_data, x
+    LDA sprite_data, x      ; Copy player sprite data to OAM
     STA SPRITE_0_ADDR, x
     INX
     CPX #4
@@ -197,9 +198,9 @@ remaining_loop:
   LDX #0
 clear_balls:
   LDA #0
-  STA ball_active, X
+  STA ball_active, X        ; Mark all balls as inactive
   INX
-  CPX #2
+  CPX #2                    ; Only 2 balls supported in this demo
   BNE clear_balls
   ; Hide all ball sprites
   LDX #0
@@ -214,13 +215,13 @@ init_ball_sprites:
   ADC #0
   STA temp_ptr_high
   LDY #SPRITE_OFFSET_Y
-  LDA #$FF
+  LDA #$FF                  ; Hide sprite offscreen
   STA (temp_ptr_low), Y
   LDY #SPRITE_OFFSET_TILE
-  LDA #5
+  LDA #5                    ; Ball tile index
   STA (temp_ptr_low), Y
   LDY #SPRITE_OFFSET_ATTR
-  LDA #0
+  LDA #0                    ; No attributes
   STA (temp_ptr_low), Y
   LDY #SPRITE_OFFSET_X
   LDA #0
@@ -303,7 +304,7 @@ hide_ball:
   ADC #0
   STA temp_ptr_high
   LDY #SPRITE_OFFSET_Y
-  LDA #$FF
+  LDA #$FF                  ; Hide sprite offscreen
   STA (temp_ptr_low), Y
 next_sprite:
   INX
@@ -337,7 +338,7 @@ next_sprite:
       LDA player_x
       SEC
       SBC #$01
-      STA player_x
+      STA player_x          ; Move left
 not_left:
     LDA controller_1
     AND #PAD_R
@@ -345,7 +346,7 @@ not_left:
       LDA player_x
       CLC
       ADC #$01
-      STA player_x
+      STA player_x          ; Move right
   not_right:
     LDA controller_1
     AND #PAD_U
@@ -353,7 +354,7 @@ not_left:
       LDA player_y
       SEC
       SBC #$01
-      STA player_y
+      STA player_y          ; Move up
   not_up:
     LDA controller_1
     AND #PAD_D
@@ -361,7 +362,7 @@ not_left:
       LDA player_y
       CLC
       ADC #$01
-      STA player_y
+      STA player_y          ; Move down
   not_down:
     RTS
 .endproc
@@ -377,7 +378,7 @@ not_left:
   LDA num_balls
   CMP max_balls
   BCS no_spawn
-  JSR spawn_ball
+  JSR spawn_ball            ; Spawn a new ball every 180 frames if under max
 no_spawn:
   LDX #0
 update_loop:
@@ -395,12 +396,12 @@ update_loop:
   JMP check_x
 bounce_top:
   LDA #1
-  STA ball_dy, X
+  STA ball_dy, X           ; Bounce down
   JSR play_random_wall_bounce_sound
   JMP check_x
 bounce_bottom:
   LDA #$FF
-  STA ball_dy, X
+  STA ball_dy, X           ; Bounce up
   JSR play_random_wall_bounce_sound
   JMP check_x
 check_x:
@@ -416,12 +417,12 @@ check_x:
   JMP next_ball
 bounce_left:
   LDA #1
-  STA ball_dx, X
+  STA ball_dx, X           ; Bounce right
   JSR play_random_wall_bounce_sound
   JMP next_ball
 bounce_right:
   LDA #$FF
-  STA ball_dx, X
+  STA ball_dx, X           ; Bounce left
   JSR play_random_wall_bounce_sound
   JMP next_ball
 next_ball:
@@ -565,6 +566,15 @@ player_loop:
   ; Increment score when ball hits player
   INC score
   JSR draw_score
+  ; Check for win condition
+  LDA score
+  CMP #10
+  BCC not_win
+    LDA #1
+    STA win_state
+    JSR show_win_screen
+    RTS
+not_win:
   JSR play_bounce_sound
 next_player:
   INX
@@ -572,6 +582,93 @@ next_player:
   BNE player_loop
   RTS
 .endproc
+
+; Routine to show the win screen with 'YOU WIN' text
+.proc show_win_screen
+    ; Disable rendering
+    LDA PPU_MASK
+    AND #%11100000 ; turn off background and sprite rendering
+    STA PPU_MASK
+
+    ; Wait for VBlank
+    : BIT PPU_STATUS
+      BPL :-
+
+    ; Set VRAM address to $2000 (start of nametable)
+    LDA PPU_STATUS
+    LDA #$20
+    STA PPU_ADDRESS
+    LDA #$00
+    STA PPU_ADDRESS
+
+    ; Fill 960 bytes with tile 0 (clear screen)
+    LDX #0
+clear_loop:
+    LDA #$00
+    STA PPU_VRAM_IO
+    INX
+    CPX #$C0
+    BNE clear_loop
+    LDY #$00
+    LDX #$C0
+clear_loop2:
+    LDA #$00
+    STA PPU_VRAM_IO
+    INX
+    CPX #$E0
+    BNE clear_loop2
+    LDY #$00
+    LDX #$E0
+clear_loop3:
+    LDA #$00
+    STA PPU_VRAM_IO
+    INX
+    CPX #$F0
+    BNE clear_loop3
+    LDY #$00
+    LDX #$F0
+clear_loop4:
+    LDA #$00
+    STA PPU_VRAM_IO
+    INX
+    CPX #$FF
+    BNE clear_loop4
+    LDA #$00
+    STA PPU_VRAM_IO ; 960th byte
+
+    ; Write 'YOU' at (row 13, col 14)
+    LDA PPU_STATUS
+    LDA #$21
+    STA PPU_ADDRESS
+    LDA #$AE
+    STA PPU_ADDRESS
+    LDA #$59 ; 'Y'
+    STA PPU_VRAM_IO
+    LDA #$4F ; 'O'
+    STA PPU_VRAM_IO
+    LDA #$55 ; 'U'
+    STA PPU_VRAM_IO
+
+    ; Write 'WIN' at (row 15, col 14)
+    LDA PPU_STATUS
+    LDA #$21
+    STA PPU_ADDRESS
+    LDA #$EE
+    STA PPU_ADDRESS
+    LDA #$57 ; 'W'
+    STA PPU_VRAM_IO
+    LDA #$49 ; 'I'
+    STA PPU_VRAM_IO
+    LDA #$4E ; 'N'
+    STA PPU_VRAM_IO
+    ; Re-enable rendering
+    LDA #(PPUMASK_SHOW_BG | PPUMASK_SHOW_SPRITES | PPUMASK_SHOW_BG_LEFT | PPUMASK_SHOW_SPRITES_LEFT)
+    STA PPU_MASK
+    RTS
+.endproc
+
+win_text:
+.byte $59, $4F, $55, 0       ; 'YOU' text (unused)
 
 ; Play a bounce sound (for ball collisions)
 .proc play_bounce_sound
@@ -603,14 +700,18 @@ next_player:
 ; Main game loop
 .proc main
     LDA #$45
-    STA random_num
+    STA random_num           ; Seed random number
     LDA #(PPUCTRL_ENABLE_NMI | PPUCTRL_BG_TABLE_1000)
-    STA PPU_CONTROL
+    STA PPU_CONTROL          ; Enable NMI, set BG pattern table
     LDA #(PPUMASK_SHOW_BG | PPUMASK_SHOW_SPRITES | PPUMASK_SHOW_BG_LEFT | PPUMASK_SHOW_SPRITES_LEFT)
-    STA PPU_MASK
+    STA PPU_MASK             ; Enable rendering
 forever:
     JSR get_random
     wait_for_vblank
+    LDA win_state
+    BEQ play_game
+    JMP forever ; If win, halt gameplay (stay on win screen)
+play_game:
     JSR read_controller
     JSR update_player
     JSR update_ball
@@ -697,34 +798,32 @@ skip_inc:
 
 ;================ GRAPHICS DATA (CHR-ROM) ================
 .segment "CHARS"
-  .incbin "assets/tiles.chr"
+  .incbin "assets/tiles.chr" ; Character (tile) graphics
 
 ;================ GAME DATA (ROM) ================
 .segment "RODATA"
 palette_data:
-  .incbin "assets/palette.pal"
+  .incbin "assets/palette.pal" ; Color palette
 nametable_data:
-  .incbin "assets/screen.nam"
+  .incbin "assets/screen.nam"  ; Background layout
 sprite_data:
-.byte 30, 1, 0, 40
-.byte 30, 2, 0, 48
-.byte 38, 3, 0, 40
-.byte 38, 4, 0, 48
+.byte 30, 1, 0, 40             ; Player sprite 0 (Y, tile, attr, X)
+.byte 30, 2, 0, 48             ; Player sprite 1
+.byte 38, 3, 0, 40             ; Player sprite 2
+.byte 38, 4, 0, 48             ; Player sprite 3
 
-hello_txt:
-.byte 'A','F','R','O', ' ', 'M', 'A', 'N', 0
 
 ;================ STARTUP CODE ================
 .segment "STARTUP"
 
 ; Reset handler: NES startup and initialization
 .proc reset_handler
-  SEI
-  CLD
+  SEI                          ; Disable interrupts
+  CLD                          ; Clear decimal mode
   LDX #$40
-  STX $4017
+  STX $4017                    ; Disable APU frame IRQ
   LDX #$FF
-  TXS
+  TXS                          ; Set up stack
   LDA #$00
   STA PPU_CONTROL
   STA PPU_MASK
@@ -732,13 +831,13 @@ hello_txt:
   ; Enable APU pulse channel 1
   LDA #$01
   STA $4015
+: BIT PPU_STATUS               ; Wait for PPU ready
+  BPL :-
+  clear_oam oam                ; Clear sprite memory
 : BIT PPU_STATUS
   BPL :-
-  clear_oam oam
-: BIT PPU_STATUS
-  BPL :-
-  JSR set_palette
-  JSR set_nametable
-  JSR init_sprites
-  JMP main
+  JSR set_palette              ; Load palette
+  JSR set_nametable            ; Load background
+  JSR init_sprites             ; Initialize sprites and game state
+  JMP main                     ; Jump to main game loop
 .endproc
